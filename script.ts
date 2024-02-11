@@ -2,26 +2,40 @@ import * as Table from 'cli-table3';
 import * as readline from "readline";
 import * as crypto from 'crypto';
 
-class Game {
-    private choices: string[];
-    private key: Buffer;
-    private pcChoice: number;
-    private table: string[][];
-    private generatedTable: any;
+class Key {
+    private readonly key: Buffer;
+
+    constructor() {
+        this.key = crypto.randomBytes(32);
+    }
+
+    public hmac(move: string) {
+        return crypto.createHmac('sha3-256', this.key).update(move).digest('hex');
+    }
+
+    public getKey(): Buffer {
+        return this.key;
+    }
+}
+
+class Rules {
+    public determine(choice: number, opponent: number, choicesLength: number): 'Win' | 'Lose' | 'Draw' {
+        const half = Math.floor(choicesLength / 2);
+        const result = Math.sign((opponent - choice + half + choicesLength) % choicesLength - half);
+
+        return result === 0 ? "Draw" : result === 1 ? "Win" : "Lose";
+    }
+}
+
+class TableGenerator {
+    private readonly choices: string[];
+    private rules: Rules;
+    private readonly table: string[][];
 
     constructor(choices: string[]) {
         this.choices = choices;
-        this.key = crypto.randomBytes(32);
-        this.pcChoice = Math.floor(Math.random() * this.choices.length);
+        this.rules = new Rules();
         this.table = this.createTable();
-        this.generatedTable;
-    }
-
-    private determine(choice: number, opponent: number): 'Win' | 'Lose' | 'Draw' {
-        const half = Math.floor(this.choices.length / 2);
-        const result = Math.sign((opponent - choice + half + this.choices.length) % this.choices.length - half);
-
-        return result === 0 ? "Draw" : result === 1 ? "Win" : "Lose";
     }
 
     private createTable(): string[][] {
@@ -30,19 +44,18 @@ class Game {
         for(let i = 0; i < this.choices.length; i++) {
             const row = [this.choices[i]];
             for (let j = 0; j < this.choices.length; j++) {
-                const result = this.determine(i+1, j+1);
+                const result = this.rules.determine(i+1, j+1, this.choices.length);
                 row.push(result);
             }
             table.push(row);
         }
 
-        this.generateTable(table);
         return table;
     }
 
-    private generateTable(table: string[][]): void {
-        this.generatedTable = new Table({
-            head: table[0],
+    public generateTable(): any {
+        const generatedTable = new Table({
+            head: this.table[0],
             colWidths: new Array(this.choices.length + 1).fill(10),
             style: {
                 head: ['red'],
@@ -50,46 +63,51 @@ class Game {
             }
         });
 
-        for (let i = 1; i < table.length; i++) {
-            this.generatedTable.push(table[i]);
+        for (let i = 1; i < this.table.length; i++) {
+            generatedTable.push(this.table[i]);
         }
+
+        return generatedTable;
+    }
+}
+
+class Game {
+    private readonly choices: string[];
+    private readonly pcChoice: number;
+    private tableGenerator: TableGenerator;
+    private key: Key;
+    private rules: Rules;
+
+    constructor(choices: string[]) {
+        this.choices = choices;
+        this.pcChoice = Math.floor(Math.random() * this.choices.length);
+        this.tableGenerator = new TableGenerator(this.choices);
+        this.key = new Key();
+        this.rules = new Rules();
     }
 
-    private printTable(): void {
-        console.log('--------------------\n'+this.generatedTable.toString()+'\n--------------------');
-    }
-
-    private hmac(move: string): string {
-        return crypto.createHmac('sha3-256', this.key).update(move).digest('hex');
+    private checkCondition(condition: boolean, errorMessage: string): void {
+        if(condition) {
+            console.error(errorMessage);
+            process.exit(1);
+        }
     }
 
     private validateArgs(): void {
-        if(args.length === 0) {
-            console.error('Please provide at least 3 or more odd arguments. Example: node script.js Rock Paper Scissors');
-            process.exit(1)
-        }
-        if(args.length < 3) {
-            console.error('Not enough arguments. Please provide at least 3 or more odd arguments.');
-            process.exit(1)
-        }
-        if(args.length % 2 === 0) {
-            console.error('Please provide an odd number of arguments which is greater than 3.');
-            process.exit(1)
-        }
-        if(args.some((arg, index) => args.findIndex(a => a.toLowerCase() === arg.toLowerCase()) !== index)) {
-            console.error('Please provide unique arguments.');
-            process.exit(1)
-        }
+        this.checkCondition(this.choices.length === 0, 'Please provide at least 3 or more odd arguments. Example: node script.js Rock Paper Scissors');
+        this.checkCondition(this.choices.length < 3, 'Not enough arguments. Please provide at least 3 or more odd arguments.');
+        this.checkCondition(this.choices.length % 2 === 0, 'Please provide an odd number of arguments which is greater than 3.');
+        this.checkCondition(this.choices.some((arg, index) => this.choices.findIndex(a => a.toLowerCase() === arg.toLowerCase()) !== index), 'Please provide unique arguments.');
     }
 
     private showMenu(rl: readline.Interface): void {
-        const pcHmac = this.hmac(this.choices[this.pcChoice]);
+        const pcHmac = this.key.hmac(this.choices[this.pcChoice]);
 
         const menu = `HMAC: ${pcHmac}\nAvailable moves:\n${this.choices.map((choice, index) => `${index + 1}. ${choice} `).join('\n')}\n? - help\n0. Quit\nEnter your move: `
         rl.question(menu, (answer) => {
             switch(answer) {
                 case '?':
-                    this.printTable();
+                    console.log('--------------------\n' + this.tableGenerator.generateTable().toString() + '\n--------------------');
                     this.showMenu(rl);
                     break;
                 case '0':
@@ -109,11 +127,12 @@ class Game {
             this.showMenu(rl);
             return;
         }
+
         const userChoice = +answer;
         const pcChoice = this.choices[this.pcChoice];
-        const result = this.table[this.pcChoice+1][userChoice];
+        const result = this.rules.determine(this.pcChoice + 1, userChoice, this.choices.length);
 
-        console.log(`--------------------\nYour move: ${this.choices[userChoice - 1]}\nComputer move: ${pcChoice}\nYou ${result}\nHMAC key: ${this.key.toString('hex')}\n--------------------`);
+        console.log(`--------------------\nYour move: ${this.choices[userChoice - 1]}\nComputer move: ${pcChoice}\nYou ${result}\nHMAC key: ${this.key.getKey().toString('hex')}\n--------------------`);
 
         rl.close();
     }
